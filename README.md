@@ -1,8 +1,19 @@
-# llm7-wrapper
+# llm-ts-api-wrapper
 
-> **A TypeScript wrapper for any OpenAI-compatible API — llm7.io, OpenAI, Azure OpenAI, Groq, Together AI, and more.**
+> **A custom TypeScript wrapper for any OpenAI-compatible API — llm7.io, OpenAI, Azure OpenAI, Groq, Together AI, and more.**
+> Also known as `llm7-wrapper`.
 
 Built by **Eduardo J. Barrios** · [edujbarrios@outlook.com](mailto:edujbarrios@outlook.com)
+
+---
+
+## Intent & philosophy
+
+This package was originally built for **private use** — the goal is to have full, direct control over how LLM API calls are made, retried, streamed, and error-handled, without depending on a third-party SDK whose internals you can't audit or change.
+
+It has been **open-sourced as-is** in case it is useful to someone else facing the same problem.
+
+> **npm publication is not discarded.** If this project gains traction or interest from the community, publishing it as an installable package on the npm registry is on the table.
 
 ---
 
@@ -32,12 +43,6 @@ Then import from `dist/`:
 
 ```typescript
 import { LLMClient } from "./dist";
-```
-
-Or, if you publish this package to npm:
-
-```bash
-npm install llm7-wrapper
 ```
 
 ---
