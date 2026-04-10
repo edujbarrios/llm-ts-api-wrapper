@@ -188,11 +188,8 @@ export class LLMClient {
   async chat(
     request: Omit<ChatCompletionRequest, "stream">
   ): Promise<ChatCompletionResponse> {
-    const payload: ChatCompletionRequest = {
-      ...request,
-      model: request.model ?? this.config.defaultModel ?? "gpt-3.5-turbo",
-      stream: false,
-    };
+    const model = ((request.model as string | undefined) ?? this.config.defaultModel ?? "gpt-3.5-turbo");
+    const payload = { ...request, model, stream: false } as ChatCompletionRequest;
 
     return this.post<ChatCompletionResponse>("/chat/completions", payload);
   }
@@ -229,11 +226,8 @@ export class LLMClient {
   async *streamChat(
     request: Omit<ChatCompletionRequest, "stream">
   ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
-    const payload: ChatCompletionRequest = {
-      ...request,
-      model: request.model ?? this.config.defaultModel ?? "gpt-3.5-turbo",
-      stream: true,
-    };
+    const model = ((request.model as string | undefined) ?? this.config.defaultModel ?? "gpt-3.5-turbo");
+    const payload = { ...request, model, stream: true } as ChatCompletionRequest;
 
     const url = `${this.config.baseURL}/chat/completions`;
     const headers = buildHeaders(this.config);

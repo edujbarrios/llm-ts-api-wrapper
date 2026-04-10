@@ -1,7 +1,7 @@
 {
-  "name": "llm7-wrapper",
+  "name": "llm-ts-api-wrapper",
   "version": "1.0.0",
-  "description": "A TypeScript wrapper for any OpenAI-compatible API (llm7.io, OpenAI, Azure OpenAI, Groq, etc.)",
+  "description": "A TypeScript wrapper for any OpenAI-compatible API (llm7.io, OpenAI, Azure OpenAI, Groq, etc.) — also known as llm7-wrapper",
   "author": "Eduardo J. Barrios <edujbarrios@outlook.com>",
   "license": "MIT",
   "main": "dist/index.js",
@@ -21,6 +21,8 @@
     "llm",
     "openai",
     "llm7",
+    "llm-ts-api-wrapper",
+    "llm7-wrapper",
     "ai",
     "typescript",
     "wrapper",
@@ -28,6 +30,7 @@
     "completions",
     "openai-compatible"
   ],
+  "aliases": ["llm7-wrapper", "llm-ts-api-wrapper"],
   "dependencies": {},
   "devDependencies": {
     "typescript": "^5.4.5",
