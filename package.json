@@ -1,0 +1,40 @@
+{
+  "name": "llm7-wrapper",
+  "version": "1.0.0",
+  "description": "A TypeScript wrapper for any OpenAI-compatible API (llm7.io, OpenAI, Azure OpenAI, Groq, etc.)",
+  "author": "Eduardo J. Barrios <edujbarrios@outlook.com>",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rimraf dist",
+    "test": "jest --passWithNoTests",
+    "lint": "eslint src --ext .ts",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "llm",
+    "openai",
+    "llm7",
+    "ai",
+    "typescript",
+    "wrapper",
+    "chat",
+    "completions",
+    "openai-compatible"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "rimraf": "^5.0.5",
+    "@types/node": "^20.12.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
