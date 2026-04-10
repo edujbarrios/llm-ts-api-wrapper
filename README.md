@@ -1,7 +1,6 @@
 # llm-ts-api-wrapper
 
-> **A custom TypeScript wrapper for any OpenAI-compatible API — llm7.io, OpenAI, Azure OpenAI, Groq, Together AI, and more.**
-> Also known as `llm7-wrapper`.
+> **A TypeScript wrapper for any OpenAI-compatible API — llm7.io, OpenAI, Azure OpenAI, Groq, Together AI, and more.**
 
 Built by **Eduardo J. Barrios** · [edujbarrios@outlook.com](mailto:edujbarrios@outlook.com)
 
