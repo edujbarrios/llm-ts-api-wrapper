@@ -32,18 +32,22 @@ It has been **open-sourced as-is** in case it is useful to someone else facing t
 
 ---
 
-## Installation
+## Clone & build
 
 ```bash
+git clone https://github.com/edujbarrios/llm-ts-api-wrapper.git
+cd llm-ts-api-wrapper
 npm install
 npm run build
 ```
 
-Then import from `dist/`:
+Then import directly from the compiled output in your project:
 
 ```typescript
-import { LLMClient } from "./dist";
+import { LLMClient } from "./path/to/llm-ts-api-wrapper/dist";
 ```
+
+> Since this package is designed for **private/local use**, you copy or submodule this repo into your project instead of installing from npm.
 
 ---
 
@@ -52,12 +56,12 @@ import { LLMClient } from "./dist";
 ### 1. Create a client
 
 ```typescript
-import { LLMClient } from "llm7-wrapper";
+import { LLMClient } from "./dist"; // local build
 
 const client = new LLMClient({
-  baseURL: "https://llm7.io/v1",      // any OpenAI-compatible base URL
-  apiKey: process.env.LLM_API_KEY!,
-  defaultModel: "gpt-4o-mini",
+  baseURL: "https://api.llm7.io/v1",  // any OpenAI-compatible base URL
+  apiKey: process.env.LLM_API_KEY!,  // or "llm7-free" for the free tier
+  defaultModel: "default",
   maxRetries: 3,
   retryBackoffMs: 1000,
   timeoutMs: 30_000,
@@ -164,7 +168,7 @@ import {
   LLMAuthenticationError,
   LLMTimeoutError,
   LLMNetworkError,
-} from "llm7-wrapper";
+} from "./dist";
 
 try {
   const text = await client.chatText({ messages: [...] });
@@ -210,6 +214,22 @@ try {
 
 ---
 
+## Examples
+
+Ready-to-run examples live in [`src/examples/`](src/examples/).
+
+| Script | What it does |
+|---|---|
+| `npm run example:capital` | Asks llm7.io "What is the capital of Spain?" (free tier, no key needed) |
+
+```bash
+npm run build
+npm run example:capital
+# → Answer: The capital of Spain is Madrid.
+```
+
+---
+
 ## Build
 
 ```bash
@@ -222,4 +242,4 @@ npm run clean    # remove dist/
 
 ## License
 
-MIT © 2026 Eduardo J. Barrios
+MIT © 2026 Eduardo J. Barrios — see [LICENSE](LICENSE)
