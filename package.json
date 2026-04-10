@@ -15,7 +15,8 @@
     "clean": "rimraf dist",
     "test": "jest --passWithNoTests",
     "lint": "eslint src --ext .ts",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepublishOnly": "npm run clean && npm run build",
+    "example:capital": "node dist/examples/capital-of-spain.js"
   },
   "keywords": [
     "llm",
