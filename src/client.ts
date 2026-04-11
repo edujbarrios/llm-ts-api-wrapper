@@ -18,6 +18,7 @@ import {
 } from "./types";
 
 import {
+  LLMError,
   LLMConfigError,
   LLMNetworkError,
   LLMTimeoutError,
@@ -203,7 +204,7 @@ export class LLMClient {
     const res = await this.chat(request);
     const content = res.choices[0]?.message?.content;
     if (typeof content !== "string") {
-      throw new LLMStreamError(
+      throw new LLMError(
         "Unexpected: first choice has no string content."
       );
     }
@@ -232,53 +233,76 @@ export class LLMClient {
     const url = `${this.config.baseURL}/chat/completions`;
     const headers = buildHeaders(this.config);
 
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      this.config.timeoutMs
-    );
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-    } catch (err: unknown) {
-      clearTimeout(timer);
-      if (
-        err instanceof Error &&
-        (err.name === "AbortError" || err.message.includes("abort"))
-      ) {
-        throw new LLMTimeoutError(this.config.timeoutMs);
-      }
-      throw new LLMNetworkError(
-        `Network error during streaming: ${String(err)}`,
-        err
+    // Retry the initial connection (not the stream itself)
+    const res = await withRetry(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(),
+        this.config.timeoutMs
       );
-    }
 
-    if (!res.ok) {
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } catch (err: unknown) {
+        clearTimeout(timer);
+        if (
+          err instanceof Error &&
+          (err.name === "AbortError" || err.message.includes("abort"))
+        ) {
+          throw new LLMTimeoutError(this.config.timeoutMs);
+        }
+        throw new LLMNetworkError(
+          `Network error during streaming: ${String(err)}`,
+          err
+        );
+      }
+
       clearTimeout(timer);
-      const parsed = await parseBody(res);
-      const requestId = res.headers.get("x-request-id") ?? undefined;
-      throw createAPIError(res.status, parsed, requestId);
-    }
+
+      if (!response.ok) {
+        const parsed = await parseBody(response);
+        const requestId = response.headers.get("x-request-id") ?? undefined;
+        throw createAPIError(response.status, parsed, requestId);
+      }
+
+      return response;
+    }, this.retryOptions());
 
     if (!res.body) {
-      clearTimeout(timer);
       throw new LLMStreamError("Response body is null — streaming not supported.");
     }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
+    const timeoutMs = this.config.timeoutMs;
+
+    // Race each read() call against an idle timeout so that long-running
+    // streams are not prematurely aborted while data is still flowing,
+    // but stalls between chunks are still detected.
+    const readWithIdleTimeout = (): Promise<{ done: boolean; value?: Uint8Array }> => {
+      return new Promise<{ done: boolean; value?: Uint8Array }>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new LLMTimeoutError(timeoutMs));
+          reader.cancel().catch(() => {});
+        }, timeoutMs);
+
+        reader.read().then(
+          (result) => { clearTimeout(timer); resolve(result); },
+          (err)    => { clearTimeout(timer); reject(err); }
+        );
+      });
+    };
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await readWithIdleTimeout();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -304,8 +328,7 @@ export class LLMClient {
         }
       }
     } finally {
-      clearTimeout(timer);
-      reader.releaseLock();
+      try { reader.releaseLock(); } catch { /* already cancelled */ }
     }
   }
 
