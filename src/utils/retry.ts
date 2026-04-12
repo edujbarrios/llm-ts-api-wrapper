@@ -59,6 +59,10 @@ export async function withRetry<T>(
   const retryableStatuses =
     options.retryableStatuses ?? DEFAULT_RETRYABLE_STATUSES;
 
+  if (options.maxRetries < 0) {
+    return fn();
+  }
+
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= options.maxRetries; attempt++) {

@@ -73,13 +73,27 @@ export class LLMClient {
       throw new LLMConfigError("apiKey is required.");
     }
 
+    const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
+    const retryBackoffMs = config.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
+
+    if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
+      throw new LLMConfigError("timeoutMs must be a positive finite number.");
+    }
+    if (maxRetries < 0 || !Number.isInteger(maxRetries)) {
+      throw new LLMConfigError("maxRetries must be a non-negative integer.");
+    }
+    if (retryBackoffMs < 0 || !Number.isFinite(retryBackoffMs)) {
+      throw new LLMConfigError("retryBackoffMs must be a non-negative finite number.");
+    }
+
     this.config = {
       baseURL: config.baseURL.replace(/\/$/, ""), // strip trailing slash
       apiKey: config.apiKey,
       defaultModel: config.defaultModel,
-      timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      maxRetries: config.maxRetries ?? DEFAULT_MAX_RETRIES,
-      retryBackoffMs: config.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS,
+      timeoutMs,
+      maxRetries,
+      retryBackoffMs,
       defaultHeaders: config.defaultHeaders ?? {},
     };
   }
@@ -317,6 +331,7 @@ export class LLMClient {
           if (trimmed.startsWith("data:")) {
             const data = trimmed.slice(5).trim();
             if (data === "[DONE]") return;
+            if (!data) continue; // skip empty data lines
 
             try {
               const chunk = JSON.parse(data) as ChatCompletionChunk;
@@ -324,6 +339,21 @@ export class LLMClient {
             } catch {
               throw new LLMStreamError(`Failed to parse stream chunk: ${data}`);
             }
+          }
+        }
+      }
+
+      // Flush any remaining data in the buffer after the stream ends.
+      // This handles servers that close without a trailing newline.
+      const remaining = buffer.trim();
+      if (remaining && remaining.startsWith("data:")) {
+        const data = remaining.slice(5).trim();
+        if (data && data !== "[DONE]") {
+          try {
+            const chunk = JSON.parse(data) as ChatCompletionChunk;
+            yield chunk;
+          } catch {
+            throw new LLMStreamError(`Failed to parse stream chunk: ${data}`);
           }
         }
       }
