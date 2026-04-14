@@ -11,6 +11,7 @@ import {
   ChatCompletionRequest,
   ChatCompletionResponse,
   ChatCompletionChunk,
+  ChatMessage,
   ModelsListResponse,
   EmbeddingRequest,
   EmbeddingResponse,
@@ -203,6 +204,11 @@ export class LLMClient {
   async chat(
     request: Omit<ChatCompletionRequest, "stream">
   ): Promise<ChatCompletionResponse> {
+    const messages = request.messages as ChatMessage[];
+    if (messages.length === 0) {
+      throw new LLMConfigError("messages array is required and cannot be empty.");
+    }
+
     const model = ((request.model as string | undefined) ?? this.config.defaultModel ?? "gpt-3.5-turbo");
     const payload = { ...request, model, stream: false } as ChatCompletionRequest;
 
@@ -216,6 +222,11 @@ export class LLMClient {
     request: Omit<ChatCompletionRequest, "stream">
   ): Promise<string> {
     const res = await this.chat(request);
+    if (!res.choices || res.choices.length === 0) {
+      throw new LLMError(
+        "Unexpected: response contains no choices."
+      );
+    }
     const content = res.choices[0]?.message?.content;
     if (typeof content !== "string") {
       throw new LLMError(
@@ -241,6 +252,11 @@ export class LLMClient {
   async *streamChat(
     request: Omit<ChatCompletionRequest, "stream">
   ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+    const messages = request.messages as ChatMessage[];
+    if (messages.length === 0) {
+      throw new LLMConfigError("messages array is required and cannot be empty.");
+    }
+
     const model = ((request.model as string | undefined) ?? this.config.defaultModel ?? "gpt-3.5-turbo");
     const payload = { ...request, model, stream: true } as ChatCompletionRequest;
 
