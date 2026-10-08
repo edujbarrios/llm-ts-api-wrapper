@@ -322,7 +322,7 @@ export class LLMClient {
       return undefined;
     };
 
-    const readWithIdleTimeout = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+    const readWithIdleTimeout = async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         return await Promise.race([
