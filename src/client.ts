@@ -202,7 +202,7 @@ export class LLMClient {
       throw new LLMConfigError("messages array is required and cannot be empty.");
     }
 
-    const model = this.resolveModel(request.model);
+    const model = this.resolveModel(request.model as string | undefined);
     const payload = { ...request, model, stream: false } as ChatCompletionRequest;
 
     return this.post<ChatCompletionResponse>("/chat/completions", payload);
@@ -374,7 +374,7 @@ export class LLMClient {
     if (!request || !Array.isArray(request.messages) || request.messages.length === 0) {
       throw new LLMConfigError("messages array is required and cannot be empty.");
     }
-    const model = this.resolveModel(request.model);
+    const model = this.resolveModel(request.model as string | undefined);
     const payload = { ...request, model, stream: true };
     yield* this.streamEvents<ChatCompletionChunk>("/chat/completions", payload);
   }
@@ -428,7 +428,7 @@ export class LLMClient {
   async embed(request: EmbeddingRequest): Promise<EmbeddingResponse> {
     const payload: EmbeddingRequest = {
       ...request,
-      model: this.resolveModel(request.model),
+      model: this.resolveModel(request.model as string | undefined),
     };
     return this.post<EmbeddingResponse>("/embeddings", payload);
   }
@@ -446,7 +446,7 @@ export class LLMClient {
     }
     return this.post<CreateResponseResult>("/responses", {
       ...request,
-      model: this.resolveModel(request.model),
+      model: this.resolveModel(request.model as string | undefined),
       stream: false,
     });
   }
@@ -475,7 +475,7 @@ export class LLMClient {
     }
     yield* this.streamEvents<ResponseStreamEvent>("/responses", {
       ...request,
-      model: this.resolveModel(request.model),
+      model: this.resolveModel(request.model as string | undefined),
       stream: true,
     });
   }
