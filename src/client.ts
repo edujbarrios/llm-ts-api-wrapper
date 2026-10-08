@@ -11,7 +11,6 @@ import {
   ChatCompletionRequest,
   ChatCompletionResponse,
   ChatCompletionChunk,
-  ChatMessage,
   ModelsListResponse,
   EmbeddingRequest,
   EmbeddingResponse,
@@ -103,33 +102,49 @@ export class LLMClient {
   // Low-level fetch with timeout + error mapping
   // -------------------------------------------------------------------------
 
-  private async fetchWithTimeout(
-    url: string,
-    init: RequestInit
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      this.config.timeoutMs
-    );
+  /**
+   * Keep the abort timer active through body consumption, not only until fetch()
+   * resolves. Each retry receives a fresh controller and deadline.
+   */
+  private async requestJSON<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+    const url = this.config.baseURL + path;
+    return withRetry(async () => {
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.config.timeoutMs);
 
-    try {
-      const res = await fetch(url, { ...init, signal: controller.signal });
-      return res;
-    } catch (err: unknown) {
-      if (
-        err instanceof Error &&
-        (err.name === "AbortError" || err.message.includes("abort"))
-      ) {
-        throw new LLMTimeoutError(this.config.timeoutMs);
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: buildHeaders(this.config),
+          ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          const parsed = await parseBody(res);
+          throw createAPIError(res.status, parsed, res.headers.get("x-request-id") ?? undefined);
+        }
+
+        const responseText = await res.text();
+        try {
+          return JSON.parse(responseText) as T;
+        } catch {
+          throw new LLMError("Invalid JSON response from " + url);
+        }
+      } catch (err: unknown) {
+        if (timedOut || (err instanceof Error && err.name === "AbortError")) {
+          throw new LLMTimeoutError(this.config.timeoutMs);
+        }
+        if (err instanceof LLMError) throw err;
+        throw new LLMNetworkError("Network error while fetching " + url + ": " + String(err), err);
+      } finally {
+        clearTimeout(timer);
       }
-      throw new LLMNetworkError(
-        `Network error while fetching ${url}: ${String(err)}`,
-        err
-      );
-    } finally {
-      clearTimeout(timer);
-    }
+    }, this.retryOptions());
   }
 
   private retryOptions(): RetryOptions {
@@ -144,48 +159,11 @@ export class LLMClient {
   // -------------------------------------------------------------------------
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const url = `${this.config.baseURL}${path}`;
-    const headers = buildHeaders(this.config);
-
-    return withRetry(async () => {
-      const res = await this.fetchWithTimeout(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const parsed = await parseBody(res);
-        const requestId = res.headers.get("x-request-id") ?? undefined;
-        throw createAPIError(res.status, parsed, requestId);
-      }
-
-      return (await res.json()) as T;
-    }, this.retryOptions());
+    return this.requestJSON<T>("POST", path, body);
   }
 
-  // -------------------------------------------------------------------------
-  // GET helper
-  // -------------------------------------------------------------------------
-
   private async get<T>(path: string): Promise<T> {
-    const url = `${this.config.baseURL}${path}`;
-    const headers = buildHeaders(this.config);
-
-    return withRetry(async () => {
-      const res = await this.fetchWithTimeout(url, {
-        method: "GET",
-        headers,
-      });
-
-      if (!res.ok) {
-        const parsed = await parseBody(res);
-        const requestId = res.headers.get("x-request-id") ?? undefined;
-        throw createAPIError(res.status, parsed, requestId);
-      }
-
-      return (await res.json()) as T;
-    }, this.retryOptions());
+    return this.requestJSON<T>("GET", path);
   }
 
   // -------------------------------------------------------------------------
@@ -204,8 +182,7 @@ export class LLMClient {
   async chat(
     request: Omit<ChatCompletionRequest, "stream">
   ): Promise<ChatCompletionResponse> {
-    const messages = request.messages as ChatMessage[];
-    if (messages.length === 0) {
+    if (!request || !Array.isArray(request.messages) || request.messages.length === 0) {
       throw new LLMConfigError("messages array is required and cannot be empty.");
     }
 
@@ -249,133 +226,141 @@ export class LLMClient {
    *   process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
    * }
    */
-  async *streamChat(
-    request: Omit<ChatCompletionRequest, "stream">
-  ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
-    const messages = request.messages as ChatMessage[];
-    if (messages.length === 0) {
-      throw new LLMConfigError("messages array is required and cannot be empty.");
-    }
-
-    const model = ((request.model as string | undefined) ?? this.config.defaultModel ?? "gpt-3.5-turbo");
-    const payload = { ...request, model, stream: true } as ChatCompletionRequest;
-
-    const url = `${this.config.baseURL}/chat/completions`;
-    const headers = buildHeaders(this.config);
-
-    // Retry the initial connection (not the stream itself)
+  /**
+   * Parse complete SSE frames (including multiline data and CRLF) or NDJSON.
+   * Never retry after starting to consume a stream, to avoid duplicate output.
+   */
+  private async *streamEvents<T>(path: string, payload: unknown): AsyncGenerator<T, void, unknown> {
+    const url = this.config.baseURL + path;
     const res = await withRetry(async () => {
       const controller = new AbortController();
-      const timer = setTimeout(
-        () => controller.abort(),
-        this.config.timeoutMs
-      );
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.config.timeoutMs);
 
-      let response: Response;
       try {
-        response = await fetch(url, {
+        const response = await fetch(url, {
           method: "POST",
-          headers,
+          headers: { ...buildHeaders(this.config), Accept: "text/event-stream" },
           body: JSON.stringify(payload),
           signal: controller.signal,
         });
+        if (!response.ok) {
+          const parsed = await parseBody(response);
+          throw createAPIError(response.status, parsed, response.headers.get("x-request-id") ?? undefined);
+        }
+        return response;
       } catch (err: unknown) {
-        clearTimeout(timer);
-        if (
-          err instanceof Error &&
-          (err.name === "AbortError" || err.message.includes("abort"))
-        ) {
+        if (timedOut || (err instanceof Error && err.name === "AbortError")) {
           throw new LLMTimeoutError(this.config.timeoutMs);
         }
-        throw new LLMNetworkError(
-          `Network error during streaming: ${String(err)}`,
-          err
-        );
+        if (err instanceof LLMError) throw err;
+        throw new LLMNetworkError("Network error during streaming: " + String(err), err);
+      } finally {
+        clearTimeout(timer);
       }
-
-      clearTimeout(timer);
-
-      if (!response.ok) {
-        const parsed = await parseBody(response);
-        const requestId = response.headers.get("x-request-id") ?? undefined;
-        throw createAPIError(response.status, parsed, requestId);
-      }
-
-      return response;
     }, this.retryOptions());
 
-    if (!res.body) {
-      throw new LLMStreamError("Response body is null — streaming not supported.");
-    }
+    if (!res.body) throw new LLMStreamError("Response body is null — streaming not supported.");
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
+    const ndjson = /ndjson/i.test(res.headers.get("content-type") ?? "");
     let buffer = "";
-    const timeoutMs = this.config.timeoutMs;
+    let dataLines: string[] = [];
+    let eventType = "";
 
-    // Race each read() call against an idle timeout so that long-running
-    // streams are not prematurely aborted while data is still flowing,
-    // but stalls between chunks are still detected.
-    const readWithIdleTimeout = (): Promise<{ done: boolean; value?: Uint8Array }> => {
-      return new Promise<{ done: boolean; value?: Uint8Array }>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new LLMTimeoutError(timeoutMs));
-          reader.cancel().catch(() => {});
-        }, timeoutMs);
+    const parse = (raw: string): T | "DONE" | undefined => {
+      if (!raw.trim()) return undefined;
+      if (raw.trim() === "[DONE]") return "DONE";
+      let value: unknown;
+      try {
+        value = JSON.parse(raw);
+      } catch {
+        throw new LLMStreamError("Failed to parse stream event: " + raw);
+      }
+      if (eventType === "error" || (value !== null && typeof value === "object" && "error" in value)) {
+        throw new LLMStreamError("Provider stream error: " + JSON.stringify(value));
+      }
+      return value as T;
+    };
 
-        reader.read().then(
-          (result) => { clearTimeout(timer); resolve(result); },
-          (err)    => { clearTimeout(timer); reject(err); }
-        );
-      });
+    const acceptLine = (line: string): T | "DONE" | undefined => {
+      if (ndjson) return parse(line.trim());
+      if (line === "") {
+        const raw = dataLines.join("\n");
+        dataLines = [];
+        const result = parse(raw);
+        eventType = "";
+        return result;
+      }
+      if (line.startsWith(":")) return undefined;
+      if (line.startsWith("data:")) {
+        const value = line.slice(5);
+        dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+      } else if (line.startsWith("event:")) {
+        eventType = line.slice(6).trim();
+      }
+      return undefined;
+    };
+
+    const readWithIdleTimeout = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new LLMTimeoutError(this.config.timeoutMs)), this.config.timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
     };
 
     try {
       while (true) {
         const { done, value } = await readWithIdleTimeout();
         if (done) break;
-
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        // Keep the last (potentially incomplete) line in the buffer
         buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === ":") continue; // SSE keep-alive
-
-          if (trimmed.startsWith("data:")) {
-            const data = trimmed.slice(5).trim();
-            if (data === "[DONE]") return;
-            if (!data) continue; // skip empty data lines
-
-            try {
-              const chunk = JSON.parse(data) as ChatCompletionChunk;
-              yield chunk;
-            } catch {
-              throw new LLMStreamError(`Failed to parse stream chunk: ${data}`);
-            }
-          }
+        for (const rawLine of lines) {
+          const result = acceptLine(rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine);
+          if (result === "DONE") return;
+          if (result !== undefined) yield result;
         }
       }
-
-      // Flush any remaining data in the buffer after the stream ends.
-      // This handles servers that close without a trailing newline.
-      const remaining = buffer.trim();
-      if (remaining && remaining.startsWith("data:")) {
-        const data = remaining.slice(5).trim();
-        if (data && data !== "[DONE]") {
-          try {
-            const chunk = JSON.parse(data) as ChatCompletionChunk;
-            yield chunk;
-          } catch {
-            throw new LLMStreamError(`Failed to parse stream chunk: ${data}`);
-          }
-        }
+      buffer += decoder.decode();
+      if (buffer) {
+        const result = acceptLine(buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer);
+        if (result === "DONE") return;
+        if (result !== undefined) yield result;
       }
+      if (!ndjson && dataLines.length) {
+        const result = parse(dataLines.join("\n"));
+        if (result !== undefined && result !== "DONE") yield result;
+      }
+    } catch (err: unknown) {
+      if (err instanceof LLMError) throw err;
+      throw new LLMStreamError("Error reading stream: " + String(err));
     } finally {
-      try { reader.releaseLock(); } catch { /* already cancelled */ }
+      await reader.cancel().catch(() => {});
+      try { reader.releaseLock(); } catch { /* already released */ }
     }
+  }
+
+  async *streamChat(
+    request: Omit<ChatCompletionRequest, "stream">
+  ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+    if (!request || !Array.isArray(request.messages) || request.messages.length === 0) {
+      throw new LLMConfigError("messages array is required and cannot be empty.");
+    }
+    const model = request.model ?? this.config.defaultModel ?? "gpt-3.5-turbo";
+    const payload = { ...request, model, stream: true };
+    yield* this.streamEvents<ChatCompletionChunk>("/chat/completions", payload);
   }
 
   /**
