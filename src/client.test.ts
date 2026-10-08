@@ -5,6 +5,7 @@ const createClient = (overrides: Record<string, unknown> = {}) =>
   new LLMClient({
     baseURL: "https://example.test/v1/",
     apiKey: "test",
+    defaultModel: "some-model",
     maxRetries: 0,
     timeoutMs: 1000,
     ...overrides,
