@@ -12,6 +12,10 @@ import {
   ChatCompletionResponse,
   ChatCompletionChunk,
   ModelsListResponse,
+  ModelInfo,
+  CreateResponseRequest,
+  CreateResponseResult,
+  ResponseStreamEvent,
   EmbeddingRequest,
   EmbeddingResponse,
   RetryOptions,
@@ -88,7 +92,7 @@ export class LLMClient {
     }
 
     this.config = {
-      baseURL: config.baseURL.replace(/\/$/, ""), // strip trailing slash
+      baseURL: config.baseURL.replace(/\/+$/, ""), // strip trailing slash
       apiKey: config.apiKey,
       defaultModel: config.defaultModel,
       timeoutMs,
@@ -106,7 +110,7 @@ export class LLMClient {
    * Keep the abort timer active through body consumption, not only until fetch()
    * resolves. Each retry receives a fresh controller and deadline.
    */
-  private async requestJSON<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  private async requestJSON<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
     const url = this.config.baseURL + path;
     return withRetry(async () => {
       const controller = new AbortController();
@@ -166,6 +170,18 @@ export class LLMClient {
     return this.requestJSON<T>("GET", path);
   }
 
+  private async delete<T>(path: string): Promise<T> {
+    return this.requestJSON<T>("DELETE", path);
+  }
+
+  private resolveModel(model: string | undefined): string {
+    const selected = model ?? this.config.defaultModel;
+    if (typeof selected !== "string" || selected.trim().length === 0) {
+      throw new LLMConfigError("model is required (pass a request model or set defaultModel).");
+    }
+    return selected;
+  }
+
   // -------------------------------------------------------------------------
   // Chat Completions — standard (non-streaming)
   // -------------------------------------------------------------------------
@@ -186,7 +202,7 @@ export class LLMClient {
       throw new LLMConfigError("messages array is required and cannot be empty.");
     }
 
-    const model = ((request.model as string | undefined) ?? this.config.defaultModel ?? "gpt-3.5-turbo");
+    const model = this.resolveModel(request.model);
     const payload = { ...request, model, stream: false } as ChatCompletionRequest;
 
     return this.post<ChatCompletionResponse>("/chat/completions", payload);
@@ -358,7 +374,7 @@ export class LLMClient {
     if (!request || !Array.isArray(request.messages) || request.messages.length === 0) {
       throw new LLMConfigError("messages array is required and cannot be empty.");
     }
-    const model = request.model ?? this.config.defaultModel ?? "gpt-3.5-turbo";
+    const model = this.resolveModel(request.model);
     const payload = { ...request, model, stream: true };
     yield* this.streamEvents<ChatCompletionChunk>("/chat/completions", payload);
   }
@@ -387,6 +403,14 @@ export class LLMClient {
     return this.get<ModelsListResponse>("/models");
   }
 
+  /** Retrieve a model by its exact ID. */
+  async retrieveModel(modelId: string): Promise<ModelInfo> {
+    if (typeof modelId !== "string" || !modelId.trim()) {
+      throw new LLMConfigError("modelId is required.");
+    }
+    return this.get<ModelInfo>("/models/" + encodeURIComponent(modelId));
+  }
+
   // -------------------------------------------------------------------------
   // Embeddings
   // -------------------------------------------------------------------------
@@ -404,8 +428,85 @@ export class LLMClient {
   async embed(request: EmbeddingRequest): Promise<EmbeddingResponse> {
     const payload: EmbeddingRequest = {
       ...request,
-      model: request.model ?? this.config.defaultModel ?? "text-embedding-ada-002",
+      model: this.resolveModel(request.model),
     };
     return this.post<EmbeddingResponse>("/embeddings", payload);
   }
+  // -------------------------------------------------------------------------
+  // Responses API — only on providers offering /responses.
+  // -------------------------------------------------------------------------
+
+  async createResponse(
+    request: Omit<CreateResponseRequest, "stream">
+  ): Promise<CreateResponseResult> {
+    if (!request || request.input === undefined || request.input === null ||
+        (typeof request.input === "string" && request.input.length === 0) ||
+        (Array.isArray(request.input) && request.input.length === 0)) {
+      throw new LLMConfigError("input is required and cannot be empty.");
+    }
+    return this.post<CreateResponseResult>("/responses", {
+      ...request,
+      model: this.resolveModel(request.model),
+      stream: false,
+    });
+  }
+
+  /** Collect all assistant output_text parts; unlike SDK output_text this uses wire data. */
+  async responseText(request: Omit<CreateResponseRequest, "stream">): Promise<string> {
+    const response = await this.createResponse(request);
+    const parts = (response.output ?? [])
+      .filter((item) => item.type === "message" && item.role === "assistant")
+      .flatMap((item) => item.content ?? [])
+      .filter((part) => part.type === "output_text" && typeof part.text === "string")
+      .map((part) => part.text as string);
+    if (parts.length === 0) {
+      throw new LLMError("Response has no output_text content (it may contain tool calls).");
+    }
+    return parts.join("");
+  }
+
+  async *streamResponse(
+    request: Omit<CreateResponseRequest, "stream">
+  ): AsyncGenerator<ResponseStreamEvent, void, unknown> {
+    if (!request || request.input === undefined || request.input === null ||
+        (typeof request.input === "string" && request.input.length === 0) ||
+        (Array.isArray(request.input) && request.input.length === 0)) {
+      throw new LLMConfigError("input is required and cannot be empty.");
+    }
+    yield* this.streamEvents<ResponseStreamEvent>("/responses", {
+      ...request,
+      model: this.resolveModel(request.model),
+      stream: true,
+    });
+  }
+
+  async streamResponseText(request: Omit<CreateResponseRequest, "stream">): Promise<string> {
+    let result = "";
+    for await (const event of this.streamResponse(request)) {
+      if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+        result += event.delta;
+      }
+      if (event.type === "response.failed" || event.type === "response.incomplete") {
+        throw new LLMStreamError("Response stream ended unsuccessfully: " + JSON.stringify(event));
+      }
+    }
+    return result;
+  }
+
+  async retrieveResponse(responseId: string): Promise<CreateResponseResult> {
+    if (typeof responseId !== "string" || !responseId.trim()) {
+      throw new LLMConfigError("responseId is required.");
+    }
+    return this.get<CreateResponseResult>("/responses/" + encodeURIComponent(responseId));
+  }
+
+  async deleteResponse(responseId: string): Promise<{ id: string; object: "response.deleted"; deleted: boolean }> {
+    if (typeof responseId !== "string" || !responseId.trim()) {
+      throw new LLMConfigError("responseId is required.");
+    }
+    return this.delete<{ id: string; object: "response.deleted"; deleted: boolean }>(
+      "/responses/" + encodeURIComponent(responseId)
+    );
+  }
+
 }
