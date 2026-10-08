@@ -36,6 +36,17 @@ export type {
   EmbeddingObject,
   EmbeddingResponse,
   RetryOptions,
+  ResponseInputText,
+  ResponseInputImage,
+  ResponseInputFile,
+  ResponseInputMessage,
+  ResponseFunctionCallOutput,
+  ResponseInputItem,
+  ResponseFunctionTool,
+  CreateResponseRequest,
+  ResponseOutputItem,
+  CreateResponseResult,
+  ResponseStreamEvent,
 } from "./types";
 
 // Error classes
