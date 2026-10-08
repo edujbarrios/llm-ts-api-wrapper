@@ -78,7 +78,7 @@ test("streams raw Responses events and aggregates output_text delta only", async
 });
 
 test("retrieves exact model IDs and Responses resources with encoded path segments", async () => {
-  const spy = jest.spyOn(globalThis, "fetch").mockResolvedValue(new Response('{"id":"resource"}'));
+  const spy = jest.spyOn(globalThis, "fetch").mockImplementation(async () => new Response('{"id":"resource"}'));
   await client().retrieveModel("org/model");
   await client().retrieveResponse("resp+id");
   await client().deleteResponse("resp+id");
