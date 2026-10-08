@@ -20,9 +20,10 @@ It has been **open-sourced as-is** in case it is useful to someone else facing t
 
 | Feature | Details |
 |---|---|
-| **Chat completions** | Standard & streaming (SSE) |
+| **Chat completions** | Standard & streaming (SSE, plus NDJSON fallbacks) |
+| **Responses API** | Create, retrieve, delete, stream, and extract text (providers exposing `/responses`) |
 | **Embeddings** | `/embeddings` endpoint |
-| **Model listing** | `/models` endpoint |
+| **Model listing & retrieval** | `/models` and `/models/{id}` endpoints |
 | **Tool / function calling** | Full type support |
 | **Auto-retry** | Exponential back-off + jitter on 429/5xx/network errors |
 | **Timeout** | Configurable per-client, uses `AbortController` |
@@ -59,8 +60,8 @@ import { LLMClient } from "./dist"; // local build
 
 const client = new LLMClient({
   baseURL: "https://api.llm7.io/v1",  // any OpenAI-compatible base URL
-  apiKey: process.env.LLM_API_KEY!,  // or "llm7-free" for the free tier
-  defaultModel: "default",
+  apiKey: process.env.LLM_API_KEY!,
+  defaultModel: "default", // use an ID supported by your provider
   maxRetries: 3,
   retryBackoffMs: 1000,
   timeoutMs: 30_000,
@@ -125,7 +126,37 @@ const result = await client.embed({
 const vector = result.data[0].embedding;
 ```
 
-### 7. Function / tool calling
+### 7. Responses API (when supported by your provider)
+
+The Responses API is separate from Chat Completions. Not every OpenAI-compatible service
+implements `/responses`, so check your provider's documentation before using it.
+
+```typescript
+const response = await client.createResponse({
+  model: "your-provider-model",
+  input: "Explain why the sky looks blue.",
+  max_output_tokens: 256,
+});
+const text = await client.responseText({
+  model: "your-provider-model",
+  input: "Summarize the water cycle in one sentence.",
+});
+const savedResponse = await client.retrieveResponse(response.id);
+
+// SSE events, including response.output_text.delta:
+for await (const event of client.streamResponse({
+  model: "your-provider-model",
+  input: "Count to three.",
+})) {
+  if (event.type === "response.output_text.delta") {
+    process.stdout.write(event.delta ?? "");
+  }
+}
+```
+
+Also available: `streamResponseText()`, `deleteResponse(id)`, and `retrieveModel(id)`.
+
+### 8. Function / tool calling
 
 ```typescript
 const res = await client.chat({
@@ -157,6 +188,17 @@ if (toolCall) {
 ```
 
 ---
+
+## Model selection and compatibility
+
+Set `model` for each request or configure `defaultModel`. There is **no implicit
+model fallback**: the client raises `LLMConfigError` when neither is supplied.
+Use a supported **embedding model** for `embed()`; a chat model usually will not work.
+
+OpenAI-compatible providers differ: Chat Completions, embeddings, model listing,
+structured outputs, newer parameters such as `max_completion_tokens`, and
+Responses API are supported only when the selected provider and model offer them.
+Fields are forwarded to the provider without SDK-specific rewriting.
 
 ## Error handling
 
@@ -194,7 +236,7 @@ try {
 |---|---|---|---|
 | `baseURL` | `string` | **required** | Base URL of the OpenAI-compatible API |
 | `apiKey` | `string` | **required** | Bearer token / API key |
-| `defaultModel` | `string` | `undefined` | Fallback model when none is given per-request |
+| `defaultModel` | `string` | `undefined` | Fallback model when none is given per-request; otherwise `model` is required |
 | `timeoutMs` | `number` | `30000` | Request timeout in milliseconds |
 | `maxRetries` | `number` | `2` | Retries on 429/5xx/network errors |
 | `retryBackoffMs` | `number` | `1000` | Base delay for exponential back-off |
@@ -210,6 +252,11 @@ try {
 | `streamChat()` / `streamChatText()` | `POST /chat/completions` (SSE) |
 | `embed()` | `POST /embeddings` |
 | `listModels()` | `GET /models` |
+| `retrieveModel(id)` | `GET /models/{id}` |
+| `createResponse()` / `responseText()` | `POST /responses` |
+| `streamResponse()` / `streamResponseText()` | `POST /responses` (SSE) |
+| `retrieveResponse(id)` | `GET /responses/{id}` |
+| `deleteResponse(id)` | `DELETE /responses/{id}` |
 
 ---
 
@@ -233,6 +280,7 @@ npm run example:capital
 
 ```bash
 npm run build    # compile to dist/
+npm test         # run mocked network regression tests
 npm run dev      # watch mode
 npm run clean    # remove dist/
 ```
