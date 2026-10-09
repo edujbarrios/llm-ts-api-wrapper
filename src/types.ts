@@ -28,7 +28,7 @@ export interface LLMClientConfig {
 // Messages
 // ---------------------------------------------------------------------------
 
-export type MessageRole = "system" | "user" | "assistant" | "tool";
+export type MessageRole = "system" | "developer" | "user" | "assistant" | "tool";
 
 export interface TextContentPart {
   type: "text";
@@ -45,7 +45,7 @@ export type ContentPart = TextContentPart | ImageContentPart;
 export interface ChatMessage {
   role: MessageRole;
   /** String for plain text; array for multi-modal content */
-  content: string | ContentPart[];
+  content?: string | ContentPart[] | null;
   /** Optional name identifier */
   name?: string;
   /** For assistant tool-call messages */
@@ -61,7 +61,8 @@ export interface ChatMessage {
 export interface FunctionDefinition {
   name: string;
   description?: string;
-  parameters: Record<string, unknown>; // JSON Schema object
+  parameters?: Record<string, unknown>; // JSON Schema object
+  strict?: boolean;
 }
 
 export interface ToolDefinition {
@@ -95,8 +96,20 @@ export interface ChatCompletionRequest {
   temperature?: number;
   /** Nucleus sampling 0–1 */
   top_p?: number;
-  /** Maximum tokens to generate */
+  /** Legacy generation cap; newer reasoning models use max_completion_tokens. */
   max_tokens?: number;
+  /** Generated tokens, including reasoning tokens. */
+  max_completion_tokens?: number;
+  /** Optional reasoning effort for supporting models. */
+  reasoning_effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  /** Whether the provider may run tool calls concurrently. */
+  parallel_tool_calls?: boolean;
+  /** Include usage in the final streaming chunk. */
+  stream_options?: { include_usage?: boolean };
+  /** Request persistence when supported. */
+  store?: boolean;
+  /** Arbitrary end-user identifier passed through to the provider. */
+  user?: string;
   /** Number of completions to generate */
   n?: number;
   /** Stop sequences */
@@ -114,7 +127,14 @@ export interface ChatCompletionRequest {
   /** Tool choice strategy */
   tool_choice?: ToolChoice;
   /** JSON mode */
-  response_format?: { type: "text" | "json_object" };
+  response_format?:
+    | { type: "text" | "json_object" }
+    | { type: "json_schema"; json_schema: {
+        name: string;
+        schema?: Record<string, unknown>;
+        description?: string;
+        strict?: boolean;
+      } };
   /** Arbitrary provider-specific extra fields */
   [key: string]: unknown;
 }
@@ -126,6 +146,7 @@ export interface ChatCompletionChoice {
     | "stop"
     | "length"
     | "tool_calls"
+    | "function_call"
     | "content_filter"
     | null;
   logprobs?: unknown;
@@ -135,6 +156,8 @@ export interface UsageStats {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  prompt_tokens_details?: Record<string, unknown>;
+  completion_tokens_details?: Record<string, unknown>;
 }
 
 export interface ChatCompletionResponse {
@@ -154,7 +177,14 @@ export interface ChatCompletionResponse {
 export interface ChatCompletionChunkDelta {
   role?: MessageRole;
   content?: string | null;
-  tool_calls?: Partial<ToolCall>[];
+  /** Streaming tool call fragments use index to associate partial arguments. */
+  tool_calls?: Array<{
+    index: number;
+    id?: string;
+    type?: "function";
+    function?: { name?: string; arguments?: string };
+  }>;
+  refusal?: string | null;
 }
 
 export interface ChatCompletionChunkChoice {
@@ -169,6 +199,7 @@ export interface ChatCompletionChunk {
   created: number;
   model: string;
   choices: ChatCompletionChunkChoice[];
+  usage?: UsageStats | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +224,8 @@ export interface ModelsListResponse {
 
 export interface EmbeddingRequest {
   model?: string;
-  input: string | string[];
+  input: string | string[] | number[] | number[][];
+  user?: string;
   encoding_format?: "float" | "base64";
   dimensions?: number;
 }
@@ -201,7 +233,7 @@ export interface EmbeddingRequest {
 export interface EmbeddingObject {
   object: "embedding";
   index: number;
-  embedding: number[];
+  embedding: number[] | string;
 }
 
 export interface EmbeddingResponse {
@@ -209,6 +241,101 @@ export interface EmbeddingResponse {
   data: EmbeddingObject[];
   model: string;
   usage: { prompt_tokens: number; total_tokens: number };
+}
+
+// ---------------------------------------------------------------------------
+// Responses API — supported by OpenAI and select compatible providers
+// ---------------------------------------------------------------------------
+
+export interface ResponseInputText {
+  type: "input_text";
+  text: string;
+}
+
+export interface ResponseInputImage {
+  type: "input_image";
+  image_url: string;
+  detail?: "auto" | "low" | "high";
+}
+
+export interface ResponseInputFile {
+  type: "input_file";
+  file_id?: string;
+  file_data?: string;
+  filename?: string;
+}
+
+export interface ResponseInputMessage {
+  role: "system" | "developer" | "user" | "assistant";
+  content: string | Array<ResponseInputText | ResponseInputImage | ResponseInputFile>;
+}
+
+export interface ResponseFunctionCallOutput {
+  type: "function_call_output";
+  call_id: string;
+  output: string;
+}
+
+export type ResponseInputItem = ResponseInputMessage | ResponseFunctionCallOutput;
+
+export interface ResponseFunctionTool {
+  type: "function";
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+  strict?: boolean;
+}
+
+export interface CreateResponseRequest {
+  model?: string;
+  input: string | ResponseInputItem[];
+  instructions?: string;
+  previous_response_id?: string;
+  max_output_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  reasoning?: { effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh"; summary?: string };
+  text?: { format?: 
+    | { type: "text" | "json_object" }
+    | { type: "json_schema"; name: string; schema: Record<string, unknown>; strict?: boolean; description?: string }
+  };
+  tools?: Array<ResponseFunctionTool | Record<string, unknown>>;
+  tool_choice?: "auto" | "none" | "required" | { type: string; name?: string };
+  store?: boolean;
+  stream?: boolean;
+  [key: string]: unknown;
+}
+
+export interface ResponseOutputItem {
+  id?: string;
+  type: string;
+  role?: string;
+  status?: string;
+  content?: Array<{ type: string; text?: string; [key: string]: unknown }>;
+  name?: string;
+  call_id?: string;
+  arguments?: string;
+  [key: string]: unknown;
+}
+
+export interface CreateResponseResult {
+  id: string;
+  object: "response";
+  model: string;
+  status: "completed" | "failed" | "in_progress" | "cancelled" | "queued" | "incomplete";
+  output: ResponseOutputItem[];
+  usage?: Record<string, unknown> | null;
+  error?: unknown;
+  [key: string]: unknown;
+}
+
+/** Wire SSE payloads from /responses, e.g. response.output_text.delta. */
+export interface ResponseStreamEvent {
+  type: string;
+  sequence_number?: number;
+  delta?: string;
+  response?: CreateResponseResult;
+  [key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------
